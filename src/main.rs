@@ -5,6 +5,7 @@ struct Node {
     attributes: Vec<Attribute>,
     parent: usize,
     children: Vec<usize>,
+    value: Option<String>,
 }
 
 struct Attribute {
@@ -13,13 +14,13 @@ struct Attribute {
 }
 
 enum State {
-    EntityContent,
-    EntityOpenBegin,
-    EntityAttributes,
-    EntityAttributeValue,
-    EntitySelfClosing,
-    TagOpenOrClose,
-    EntityCloseBegin,
+    TagContent,
+    TagOpenBegin,
+    TagAttributes,
+    TagAttributeValue,
+    TagSelfClosing,
+    TagOpenOrCloseBegin,
+    TagCloseBegin,
 }
 
 fn consume_token(data: &mut Bytes) -> Option<String> {
@@ -68,16 +69,13 @@ fn tokenize_document(document: &str) -> Vec<String> {
 }
 
 fn parse_attributes(attributes_str: &String) -> Vec<Attribute> {
-    println!("{}", attributes_str);
     let mut attributes: Vec<Attribute> = Vec::new();
     for token in attributes_str.split_ascii_whitespace() {
         match token.split_once('=') {
             Some((name, value)) => {
-                println!("name: {}, value: {}", name, value);
                 attributes.push(Attribute { name: name.to_owned(), value: Some(value.to_owned()) });
             }
             None => {
-                println!("name: {}", token);
                 attributes.push(Attribute { name: token.to_owned(), value: None });
             }
         }
@@ -87,12 +85,13 @@ fn parse_attributes(attributes_str: &String) -> Vec<Attribute> {
 
 fn parse_tokens(tokens: &Vec<String>) -> Vec<Node> {
     let mut it = tokens.iter();
-    let mut state = State::EntityContent;
-    let root = Node { tag: "#document".to_owned(), attributes: vec![], parent: 0, children: Vec::new() };
+    let mut state = State::TagContent;
+    let root = Node { tag: "#document".to_owned(), attributes: vec![], parent: 0, children: Vec::new(), value: None };
     let mut nodes: Vec<Node> = vec![root];
     let mut head: usize = 0;
     let mut current_tag = String::new();
     let mut current_attributes = String::new();
+    let mut current_text = String::new();
     loop {
         match it.next() {
             Some(token) => {
@@ -108,16 +107,16 @@ fn parse_tokens(tokens: &Vec<String>) -> Vec<Node> {
                     //     TokenizerState::EntityAttributes => "attributes",
                     //     _ => "invalid"
                     // });
-                    
+
                     match c {
                         '"' => {
                             match state {
-                                State::EntityAttributes => {
-                                    state = State::EntityAttributeValue;
+                                State::TagAttributes => {
+                                    state = State::TagAttributeValue;
                                 }
 
-                                State::EntityAttributeValue => {
-                                    state = State::EntityAttributes;
+                                State::TagAttributeValue => {
+                                    state = State::TagAttributes;
                                 }
 
                                 _ => {}
@@ -126,47 +125,39 @@ fn parse_tokens(tokens: &Vec<String>) -> Vec<Node> {
 
                         '<' => {
                             match state {
-                                State::EntityContent => {
-                                    state = State::TagOpenOrClose;
+                                State::TagContent => {
+                                    state = State::TagOpenOrCloseBegin;
+                                    if current_text.len() > 0 {
+                                        let idx = nodes.len();
+                                        nodes.push(Node { tag: "#text".to_string(), attributes: vec![], parent: head, children: vec![], value: Some(current_text.to_owned()) });
+                                        nodes[head].children.push(idx);
+                                        current_text = String::new();
+                                    }
                                 },
-
-                                // TokenizerState::EntityOpenEnd => {
-                                //     // Push the current node onto the stack
-                                //     stack.push(Node { tag: token_parsed.to_owned(), attributes: vec![], children: vec![] });
-                                //     token_parsed = String::new();
-                                // }
-
                                 _ => {}
                             }
                         }
 
                         '>' => {
                             match state {
-                                State::EntityOpenBegin | State::EntityAttributes => {
+                                State::TagOpenBegin | State::TagAttributes | State::TagSelfClosing => {
                                     println!("Pushed entity {}", current_tag);
                                     let idx = nodes.len();
                                     let attributes = parse_attributes(&current_attributes);
-                                    nodes.push(Node { tag: current_tag.to_owned(), attributes, parent: head, children: vec![] });
+                                    nodes.push(Node { tag: current_tag.to_owned(), attributes, parent: head, children: vec![], value: None });
                                     nodes[head].children.push(idx);
-                                    head = idx;
+                                    head = match state {
+                                        State::TagSelfClosing => head,
+                                        State::TagOpenBegin | State::TagAttributes => idx,
+                                        _ => panic!("Invalid state"),
+                                    };
                                     current_tag = String::new();
                                     current_attributes = String::new();
-                                    state = State::EntityContent;
+                                    state = State::TagContent;
                                 },
 
-                                State::EntitySelfClosing => {
-                                    println!("Pushed entity {}", current_tag);
-                                    let idx = nodes.len();
-                                    let attributes = parse_attributes(&current_attributes);
-                                    nodes.push(Node { tag: current_tag.to_owned(), attributes, parent: head, children: vec![] });
-                                    nodes[head].children.push(idx);
-                                    current_tag = String::new();
-                                    current_attributes = String::new();
-                                    state = State::EntityContent;
-                                },
-
-                                State::EntityCloseBegin => {
-                                    state = State::EntityContent;
+                                State::TagCloseBegin => {
+                                    state = State::TagContent;
                                     head = nodes[head].parent;
                                 }
 
@@ -176,16 +167,16 @@ fn parse_tokens(tokens: &Vec<String>) -> Vec<Node> {
 
                         '/' => {
                             match state {
-                                State::EntityAttributeValue => {
+                                State::TagAttributeValue => {
                                     current_attributes.push(c);
                                 }
 
-                                State::TagOpenOrClose => {
-                                    state = State::EntityCloseBegin;
+                                State::TagOpenOrCloseBegin => {
+                                    state = State::TagCloseBegin;
                                 }
 
-                                State::EntityAttributes | State::EntityOpenBegin => {
-                                    state = State::EntitySelfClosing;
+                                State::TagAttributes | State::TagOpenBegin => {
+                                    state = State::TagSelfClosing;
                                 }
 
                                 _ => {}
@@ -194,25 +185,32 @@ fn parse_tokens(tokens: &Vec<String>) -> Vec<Node> {
 
                         _ => {
                             match state {
-                                State::EntityOpenBegin => {
+                                State::TagOpenBegin => {
                                     if token_boundary {
-                                        state = State::EntityAttributes;
+                                        state = State::TagAttributes;
                                         current_attributes.push(c);
                                     } else {
                                         current_tag.push(c);
                                     }
                                 }
 
-                                State::EntityAttributes | State::EntityAttributeValue => {
+                                State::TagAttributes | State::TagAttributeValue => {
                                     if token_boundary {
                                         current_attributes.push(' ');
                                     }
                                     current_attributes.push(c);
                                 }
 
-                                State::TagOpenOrClose => {
-                                    state = State::EntityOpenBegin;
+                                State::TagOpenOrCloseBegin => {
+                                    state = State::TagOpenBegin;
                                     current_tag.push(c);
+                                }
+
+                                State::TagContent => {
+                                    if token_boundary {
+                                        current_text.push(' ');
+                                    }
+                                    current_text.push(c);
                                 }
 
                                 _ => {}
@@ -240,20 +238,17 @@ fn main() {
 fn print_node_header(node: &Node, depth: usize) {
     print!("{}{}", " ".repeat(depth * 2), node.tag);
     for Attribute { name, value } in node.attributes.iter() {
-        // match value {
-        //     Some(v) => {
-        //         println!("val: {}", v);
-        //     }
-        //     None => {}
-        // }
         print!(" [{}={}]", name, match value { Some(v) => v, None => ""});
     }
     println!("");
+    match &node.value {
+        Some(v) => println!("{}{}", " ".repeat((depth + 1) * 2), v),
+        None => {},
+    }
 }
 
 fn print_node(idx: usize, tree: &Vec<Node>, depth: usize) {
     let node = &tree[idx];
-    // println!("{}{} [{}]", " ".repeat(depth * 2), node.tag, match node.attributes.len() > 0 { true => node.attributes[0].to_string(), false => "".to_string() });
     print_node_header(node, depth);
     for child in node.children.iter() {
         print_node(*child, tree, depth + 1);
