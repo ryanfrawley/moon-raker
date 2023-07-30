@@ -55,6 +55,7 @@ fn consume_token(data: &mut Bytes) -> Option<String> {
 
 
 fn parse_attributes(attributes_str: &String) -> Vec<Attribute> {
+    println!("{}", attributes_str);
     let mut attributes: Vec<Attribute> = Vec::new();
     for token in attributes_str.split_ascii_whitespace() {
         match token.split_once('=') {
@@ -107,6 +108,7 @@ fn parse_tokens(tokens: &Vec<String>) -> Vec<Node> {
 
                                 _ => {}
                             }
+                            current_attributes.push(c);
                         }
 
                         '<' => {
